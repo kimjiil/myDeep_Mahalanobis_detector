@@ -45,14 +45,27 @@ class OutOfDistributionDetector(torch.nn.Module):
         # self.std_layer_3 = torch.nn.Linear(in_features=10, out_features=256) # N 256 64
         # self.std_layer_4 = torch.nn.Linear(in_features=10, out_features=512) # N 512 16
 
+        self.classifier = torch.nn.Sequential(
+            torch.nn.Linear(in_features=5, out_features=1)
+            # ,torch.nn.Sigmoid()
+        )
+
     def reparametarize(self, mu, co):
         pass
 
     def forward(self, x):
-        noised_img = self.noise_layer(x)
+        batch_size = x.size(0)
+        num_class = 10
+        noised_img = x.repeat([1, 5, 1, 1]) + self.noise_layer(x)
         feature_list = []
         feature_out = []
-        for layer_idx in range(5):
+        feature_dim = [64, 64, 128, 256, 512]
+
+        mean_list = []
+        std_list = []
+
+        score_list = None
+        for layer_idx, f_dim in enumerate(feature_dim):
             out_feature = self.pretrained_model.intermediate_forward(noised_img[:, 3*layer_idx:3*(layer_idx+1), :, :], layer_idx)
             out_feature = out_feature.view(out_feature.size(0), out_feature.size(1), -1)
 
@@ -60,20 +73,28 @@ class OutOfDistributionDetector(torch.nn.Module):
 
             x_mean = self.mu_layer_list[layer_idx](out_feature).transpose(1, 2).contiguous()
             x_std = self.std_layer_list[layer_idx](out_feature).transpose(1, 2)
-            x_variance = x_std * torch.eye(64).unsqueeze([0, 1]).cuda()
-            random_covariance = torch.randn((64, 64)) * torch.eye(64)
-            dist = multivariate_normal.MultivariateNormal(loc=x_mean.transpose(1, 2).contiguous(), scale_tril=random_covariance.cuda())
+            x_variance = x_std.unsqueeze(-1) * torch.eye(f_dim).unsqueeze(0).unsqueeze(0).cuda()
+            x_variance = torch.square(x_variance)
+            dist = multivariate_normal.MultivariateNormal(loc=x_mean, scale_tril=x_variance)
 
-            print()
-        output = None
-        return output
+            x_sample = dist.sample()
+            x_sample = x_sample - x_mean
+            temp = torch.bmm(x_sample.unsqueeze(2).view(-1, 1, f_dim), torch.inverse(x_variance).view(-1, f_dim, f_dim))
+            _mahalanobis_score = -0.5 * torch.bmm(temp, x_sample.unsqueeze(-1).view(-1, f_dim, 1))
+            _mahalanobis_score = _mahalanobis_score.view(batch_size, num_class)
+            mahalanobis_score, max_idx = torch.max(_mahalanobis_score, dim=1)
+            mahalanobis_score = mahalanobis_score.unsqueeze(-1)
+            if layer_idx == 0:
+                score_list = mahalanobis_score
+            else:
+                score_list = torch.cat((score_list, mahalanobis_score), dim=1)
+            gather_idx = torch.Tensor([1] * f_dim).type(torch.int64).unsqueeze(0).unsqueeze(0).cuda() * max_idx.unsqueeze(-1).unsqueeze(-1)
+            temp_mean = torch.gather(x_mean, 1, gather_idx).squeeze()
+            temp_std = torch.gather(x_std, 1, gather_idx).squeeze()
 
-class AddLayer(torch.nn.Module):
-    def __init__(self, channel, height, width):
-        super(AddLayer, self).__init__()
-        self._weight = torch.nn.Parameter(torch.randn(channel, height, width))
+            mean_list.append(temp_mean)
+            std_list.append(temp_std)
 
-    def forward(self, input):
-        output = torch.add(input, self._weight)
-        return output
+        out = self.classifier(score_list)
+        return out.squeeze(-1), mean_list, std_list
 

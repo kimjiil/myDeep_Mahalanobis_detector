@@ -11,6 +11,9 @@
 
 import torch
 from torchvision import transforms
+from torch.utils.data import ConcatDataset
+
+import numpy as np
 
 import data_loader
 import model_loader
@@ -36,10 +39,21 @@ def main(args):
                                        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),])
     data_path = "./data" # 임시
 
-    train_loader, test_loader = data_loader.getTargetDataSet(data_type=data_type,
+    train_loader_cifar, test_loader_cifar = data_loader.getTargetDataSet(data_type=data_type,
                                                              batch_size=args.batch_size,
                                                              input_TF=in_transform,
                                                              dataroot=data_path)
+
+    train_loader_svhn = data_loader.getNonTargetDataSet('svhn', args.batch_size, in_transform, data_path)
+
+    train_dataset = ConcatDataset([
+        train_loader_cifar.dataset,
+        train_loader_svhn.dataset
+    ])
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=args.batch_size, shuffle=True
+    )
 
     # model load
     net_type = "resnet" # 임시
@@ -47,15 +61,61 @@ def main(args):
 
     model.to(device=device)
 
+    out_dist_list = ['svhn', 'imagenet_resize', 'lsun_resize']
+    # for out_dist in out_dist_list:
+    #     out_test_loader = data_loader.getNonTargetDataSet(out_dist, args.batch_size, in_transform, data_path)
+    #
+    #     for data, target in out_test_loader:
+    #         data, target = data.to(device), target.to(device)
+    #         print()
 
-    # train
-    for data, target in test_loader:
-        data, target = data.to(device), target.to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
+    criterion = torch.nn.BCELoss()
+    for epoch in range(100):
+        if epoch == 99:
+            print()
+        # train
+        loss_list = []
+        mse_list = []
+        kl_list = []
+        for data, target in train_loader:
+            data, target = data.to(device), target.to(device)
+            optimizer.zero_grad()
+            pred, mean_list, std_list = model(data)
+            # print(target, pred)
+            loss, mse, kl = loss_func(target, pred, mean_list, std_list)
+            # print(round(loss.item(),6))
+            loss_list.append(loss.item)
+            # loss = criterion(pred, target.type(torch.float32))
+            # print(loss)
+            loss.backward()
+            optimizer.step()
 
-        model(data)
-
+        print(f"{epoch}/loss: ", np.mean(loss_list))
+        print(f"{epoch}/mse: ", np.mean(mse_list))
+        print(f"{epoch}/KL: ", np.mean(kl_list))
     # valid
 
+def loss_func(input, output, mu_list, std_list):
+    # marginal_likelihood = torch.mean(torch.sum(input * torch.log(output) + (1 - input) * torch.log(1 - output)))
+    marginal_likelihood_mse = torch.mean(torch.square(output - input))
+    # print("mse :", marginal_likelihood_mse.item())
+    temp_loss = []
+    for mu, std in zip(mu_list, std_list):
+        temp_loss.append(torch.mean(-0.5 * torch.sum((1 + torch.log(torch.square(std))) - torch.square(mu) - torch.square(std), dim=(1))))
+
+    kl_divergence = torch.mean(torch.Tensor(temp_loss))
+    # print("KL divergence : ", kl_divergence.item())
+    ELBO = marginal_likelihood_mse - kl_divergence
+    loss = -ELBO
+
+    if loss.item() == float("inf"):
+        print()
+    elif loss.item() == float("-inf"):
+        print()
+    elif loss.item() == float("nan"):
+        print()
+    return loss, marginal_likelihood_mse, kl_divergence
 
 if __name__ == "__main__":
     args = ArgsParse()

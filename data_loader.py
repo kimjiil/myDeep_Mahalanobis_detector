@@ -5,6 +5,9 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import os
 import ssl
+from typing import Any, Callable, Optional, Tuple
+from PIL import Image
+import numpy as np
 ssl._create_default_https_context = ssl._create_unverified_context
 
 def getSVHN(batch_size, TF, data_root='/tmp/public_dataset/pytorch', train=True, val=True, **kwargs):
@@ -20,23 +23,58 @@ def getSVHN(batch_size, TF, data_root='/tmp/public_dataset/pytorch', train=True,
     ds = []
     if train:
         train_loader = torch.utils.data.DataLoader(
-            datasets.SVHN(
-                root=data_root, split='train', download=True,
-                transform=TF,
-            ),
+            # datasets.SVHN(
+            #     root=data_root, split='train', download=True,
+            #     transform=TF,
+            # ),
+            mySVHN(root=data_root, split='train', download=True,
+                   transform=TF),
             batch_size=batch_size, shuffle=True, **kwargs)
         ds.append(train_loader)
 
     if val:
         test_loader = torch.utils.data.DataLoader(
-            datasets.SVHN(
-                root=data_root, split='test', download=True,
-                transform=TF,
-            ),
+            # datasets.SVHN(
+            #     root=data_root, split='test', download=True,
+            #     transform=TF,
+            # ),
+            mySVHN(root=data_root, split='test', download=True,
+                   transform=TF),
             batch_size=batch_size, shuffle=False, **kwargs)
         ds.append(test_loader)
     ds = ds[0] if len(ds) == 1 else ds
     return ds
+
+class mySVHN(datasets.SVHN):
+    def __init__(self,
+                 root: str,
+                 split: str = "train",
+                 transform: Optional[Callable] = None,
+                 target_transform: Optional[Callable] = None,
+                 download: bool = False,):
+        super(mySVHN, self).__init__(root=root, split=split, transform=transform, target_transform=target_transform, download=download)
+
+    def __getitem__(self, index: int) -> Tuple[Any, Any]:
+        """
+        Args:
+            index (int): Index
+
+        Returns:
+            tuple: (image, target) where target is index of the target class.
+        """
+        img, target = self.data[index], int(self.labels[index])
+
+        # doing this so that it is consistent with all other datasets
+        # to return a PIL Image
+        img = Image.fromarray(np.transpose(img, (1, 2, 0)))
+
+        if self.transform is not None:
+            img = self.transform(img)
+
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return img, 1 #target
 
 def getCIFAR10(batch_size, TF, data_root='/tmp/public_dataset/pytorch', train=True, val=True, **kwargs):
     data_root = os.path.expanduser(os.path.join(data_root, 'cifar10-data'))
@@ -45,20 +83,62 @@ def getCIFAR10(batch_size, TF, data_root='/tmp/public_dataset/pytorch', train=Tr
     ds = []
     if train:
         train_loader = torch.utils.data.DataLoader(
-            datasets.CIFAR10(
-                root=data_root, train=True, download=True,
-                transform=TF),
+            # datasets.CIFAR10(
+            #     root=data_root, train=True, download=True,
+            #     transform=TF),
+            myCifar10(
+                root=data_root, train=True, download=True, transform=TF
+            ),
             batch_size=batch_size, shuffle=True, **kwargs)
         ds.append(train_loader)
     if val:
         test_loader = torch.utils.data.DataLoader(
-            datasets.CIFAR10(
-                root=data_root, train=False, download=True,
-                transform=TF),
+            # datasets.CIFAR10(
+            #     root=data_root, train=False, download=True,
+            #     transform=TF),
+            myCifar10(
+                root=data_root, train=True, download=True, transform=TF
+            ),
             batch_size=batch_size, shuffle=False, **kwargs)
         ds.append(test_loader)
     ds = ds[0] if len(ds) == 1 else ds
     return ds
+
+class myCifar10(datasets.CIFAR10):
+    # 메서드만 변경
+    def __init__(self,
+                 root: str,
+                 train: bool = True,
+                 transform: Optional[Callable] = None,
+                 target_transform: Optional[Callable] = None,
+                 download: bool = False,) -> None:
+        super(myCifar10, self).__init__(root=root,
+                                        train=train,
+                                        transform=transform,
+                                        target_transform=target_transform,
+                                        download=download)
+
+    def __getitem__(self, index: int) -> Tuple[Any, Any]:
+        """
+        Args:
+            index (int): Index
+
+        Returns:
+            tuple: (image, target) where target is index of the target class.
+        """
+        img, target = self.data[index], self.targets[index]
+
+        # doing this so that it is consistent with all other datasets
+        # to return a PIL Image
+        img = Image.fromarray(img)
+
+        if self.transform is not None:
+            img = self.transform(img)
+
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return img, 0 #target
 
 def getCIFAR100(batch_size, TF, data_root='/tmp/public_dataset/pytorch', train=True, val=True, **kwargs):
     data_root = os.path.expanduser(os.path.join(data_root, 'cifar100-data'))
@@ -109,5 +189,4 @@ def getNonTargetDataSet(data_type, batch_size, input_TF, dataroot):
         testsetout = datasets.ImageFolder(dataroot, transform=input_TF)
         test_loader = torch.utils.data.DataLoader(testsetout, batch_size=batch_size, shuffle=False, num_workers=1)
     return test_loader
-
 
