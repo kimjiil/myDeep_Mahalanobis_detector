@@ -22,7 +22,7 @@ import argparse
 
 def ArgsParse():
     parser = argparse.ArgumentParser(description="MyDeep Mahalanobis Detector")
-    parser.add_argument('--batch_size', type=int, default=5, help='batch size for data loader')
+    parser.add_argument('--batch_size', type=int, default=100, help='batch size for data loader')
     parser.add_argument('--pretrained_model', type=str, required=True, help="path to pretrained model")
     parser.add_argument('--gpu_id', type=int, default=0, help="gpu index")
 
@@ -78,14 +78,19 @@ def main(args):
         loss_list = []
         mse_list = []
         kl_list = []
-        for data, target in train_loader:
+        for idx ,(data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
             optimizer.zero_grad()
-            pred, mean_list, std_list = model(data)
+            # pred, mean_list, std_list = model(data)
+            pred, mean_list, logvar_list = model(data)
             # print(target, pred)
-            loss, mse, kl = loss_func(target, pred, mean_list, std_list)
-            # print(round(loss.item(),6))
-            loss_list.append(loss.item)
+            # for i in range(5):
+            #     print(f"std_{i} max-{torch.max(std_list[i])} / min-{torch.min(std_list[i])}")
+            loss, mse, kl = loss_func(target, pred, mean_list, logvar_list)
+            # print(f"step :{idx}", round(loss.item(),6))
+            loss_list.append(loss.item())
+            mse_list.append(mse.item())
+            kl_list.append(kl.item())
             # loss = criterion(pred, target.type(torch.float32))
             # print(loss)
             loss.backward()
@@ -96,17 +101,17 @@ def main(args):
         print(f"{epoch}/KL: ", np.mean(kl_list))
     # valid
 
-def loss_func(input, output, mu_list, std_list):
-    # marginal_likelihood = torch.mean(torch.sum(input * torch.log(output) + (1 - input) * torch.log(1 - output)))
-    marginal_likelihood_mse = torch.mean(torch.square(output - input))
-    # print("mse :", marginal_likelihood_mse.item())
+def loss_func(input, output, mu_list, logvar_list):
+    marginal_likelihood = torch.mean(torch.sum(input * torch.log(output) + (1 - input) * torch.log(1 - output)))
+    # marginal_likelihood = torch.mean(torch.square(output - input))
+    # print("mse :", marginal_likelihood.item())
     temp_loss = []
-    for mu, std in zip(mu_list, std_list):
-        temp_loss.append(torch.mean(-0.5 * torch.sum((1 + torch.log(torch.square(std))) - torch.square(mu) - torch.square(std), dim=(1))))
+    for mu, logvar in zip(mu_list, logvar_list):
+        temp_loss.append(torch.mean(-0.5 * torch.sum( (1 + logvar) - torch.square(mu) - torch.exp(logvar), dim=1)))
 
     kl_divergence = torch.mean(torch.Tensor(temp_loss))
     # print("KL divergence : ", kl_divergence.item())
-    ELBO = marginal_likelihood_mse - kl_divergence
+    ELBO = marginal_likelihood - kl_divergence
     loss = -ELBO
 
     if loss.item() == float("inf"):
@@ -115,7 +120,7 @@ def loss_func(input, output, mu_list, std_list):
         print()
     elif loss.item() == float("nan"):
         print()
-    return loss, marginal_likelihood_mse, kl_divergence
+    return loss, marginal_likelihood, kl_divergence
 
 if __name__ == "__main__":
     args = ArgsParse()
